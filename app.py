@@ -67,13 +67,63 @@ def procesar_traspasos(file, nombre_agencia):
     for _, row in df.iterrows():
         val_a = str(row[0]).strip().upper()
         
-        # --- NIVEL 1: DETECTAR DESTINO (SALIDA... HACIA...) ---
-        if "SALIDA DE ALM." in val_a and "HACIA" in val_a:
+        # --- NIVEL 1: DETECTAR DESTINO (SALIDA...) ---
+        # Ahora solo buscamos que la fila empiece con "SALIDA" para abarcar todas las variantes
+        if val_a.startswith("SALIDA"):
+            
+            # CASO A: Tiene un destino explícito con la palabra "HACIA"
+            if "HACIA" in val_a:
+                try:
+                    destino_sucio = val_a.split("HACIA")[1] 
+                    destino_actual = destino_sucio.strip()
+                except:
+                    continue
+                    
+            # CASO B: Es una salida por traspaso genérica (sin "HACIA")
+            elif "SALIDA DE ALMACEN POR TRASPASO" in val_a:
+                # Aquí aplicamos tu lógica: le pegamos el nombre de la agencia que procesa el archivo
+                destino_actual = f"SALIDA DE ALMACEN POR TRASPASO {nombre_agencia}"
+
+        # --- NIVEL 2: DETECTAR CABECERA (REFERENCIA / FECHA / USUARIO) ---
+        elif "REFERENCIA:" in val_a:
             try:
-                destino_sucio = val_a.split("HACIA")[1] 
-                destino_actual = destino_sucio.strip()
+                referencia = val_a.split("REFERENCIA:")[1].strip()
+                
+                if "FECHA MOV:" in str(row[2]).upper():
+                    fecha_mov = str(row[2]).upper().split("FECHA MOV:")[1].strip()
+                
+                if "USUARIO:" in str(row[3]).upper():
+                    usuario = str(row[3]).upper().split("USUARIO:")[1].strip()
             except:
                 continue
+                
+        # --- NIVEL 3: DETECTAR ÍTEMS (TRAS...) ---
+        elif val_a.startswith("TRAS"):
+            if destino_actual:
+                try:
+                    # --- CANDADO DE LIMPIEZA ---
+                    descripcion = str(row[3]).strip()
+                    
+                    if descripcion and descripcion.lower() != 'nan':
+                        cantidad = float(row[4]) 
+                        costo = float(row[5])    
+                        
+                        datos.append({
+                            "AGENCIA": nombre_agencia,    
+                            "DESTINO": destino_actual,    
+                            "REFERENCIA": referencia,
+                            "FECHA_MOV": fecha_mov,
+                            "USUARIO": usuario,
+                            "NP": row[2],                 
+                            "DESCRIPCION": row[3],        
+                            "CANTIDAD": abs(cantidad),    
+                            "COSTO_UNIT": costo,          
+                            "TOTAL_COSTO": abs(cantidad) * costo 
+                        })
+                except:
+                    continue
+
+    return pd.DataFrame(datos)
 
         # --- NIVEL 2: DETECTAR CABECERA (REFERENCIA / FECHA / USUARIO) ---
         elif "REFERENCIA:" in val_a:
