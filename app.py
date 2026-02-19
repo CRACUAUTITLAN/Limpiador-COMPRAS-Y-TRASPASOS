@@ -5,8 +5,7 @@ import io
 # --- FUNCIÓN 1: LIMPIEZA DE COMPRAS (BPRO) ---
 def procesar_compras(file, nombre_agencia):
     """
-    Limpia el archivo de compras. 
-    nombre_agencia: Se pasa manual desde el botón de Streamlit (CUAUTITLAN o TULTITLAN)
+    Limpia el archivo de compras evitando filas basura o subtotales.
     """
     df = pd.read_excel(file, header=None)
     datos = []
@@ -32,27 +31,31 @@ def procesar_compras(file, nombre_agencia):
                 continue
 
         # Detectar Ítems (CRCU / CRTU / o cualquier código de compra)
-        # Como definimos la agencia por el archivo, aceptamos cualquier prefijo de compra
         elif val_a.startswith("CR"): 
-            datos.append({
-                "AGENCIA": nombre_agencia, # <--- Definido por el usuario
-                "FACTURA": factura,
-                "FECHA": fecha,
-                "PROVEEDOR": proveedor,
-                "COMPRADOR": comprador,
-                "NP": row[2],
-                "DESCRIPCION": row[3],
-                "CANTIDAD": row[4],
-                "COSTO_UNIT": row[5],
-                "TOTAL": row[9] # Asumiendo que BPro da el total en la col J
-            })
+            # --- CANDADO DE LIMPIEZA ---
+            descripcion = str(row[3]).strip() # Columna D
+            
+            # Si la descripción existe y no es 'nan' (vacía), guardamos la fila
+            if descripcion and descripcion.lower() != 'nan':
+                datos.append({
+                    "AGENCIA": nombre_agencia,
+                    "FACTURA": factura,
+                    "FECHA": fecha,
+                    "PROVEEDOR": proveedor,
+                    "COMPRADOR": comprador,
+                    "NP": row[2],
+                    "DESCRIPCION": row[3],
+                    "CANTIDAD": row[4],
+                    "COSTO_UNIT": row[5],
+                    "TOTAL": row[9] 
+                })
             
     return pd.DataFrame(datos)
 
 # --- FUNCIÓN 2: LIMPIEZA DE TRASPASOS (BPRO) ---
 def procesar_traspasos(file, nombre_agencia):
     """
-    Limpia traspasos con lógica de 3 niveles: Destino -> Referencia -> Ítem
+    Limpia traspasos con lógica de 3 niveles y evita subtotales finales.
     """
     df = pd.read_excel(file, header=None)
     datos = []
@@ -62,12 +65,11 @@ def procesar_traspasos(file, nombre_agencia):
     referencia, fecha_mov, usuario = None, None, None
     
     for _, row in df.iterrows():
-        val_a = str(row[0]).strip().upper() # Convertimos a mayúsculas para facilitar búsqueda
+        val_a = str(row[0]).strip().upper()
         
         # --- NIVEL 1: DETECTAR DESTINO (SALIDA... HACIA...) ---
         if "SALIDA DE ALM." in val_a and "HACIA" in val_a:
             try:
-                # Partimos el texto en la palabra "HACIA" y tomamos la parte derecha
                 destino_sucio = val_a.split("HACIA")[1] 
                 destino_actual = destino_sucio.strip()
             except:
@@ -78,11 +80,9 @@ def procesar_traspasos(file, nombre_agencia):
             try:
                 referencia = val_a.split("REFERENCIA:")[1].strip()
                 
-                # Fecha Mov (Columna C)
                 if "FECHA MOV:" in str(row[2]).upper():
                     fecha_mov = str(row[2]).upper().split("FECHA MOV:")[1].strip()
                 
-                # Usuario (Columna D)
                 if "USUARIO:" in str(row[3]).upper():
                     usuario = str(row[3]).upper().split("USUARIO:")[1].strip()
             except:
@@ -90,24 +90,27 @@ def procesar_traspasos(file, nombre_agencia):
                 
         # --- NIVEL 3: DETECTAR ÍTEMS (TRAS...) ---
         elif val_a.startswith("TRAS"):
-            # Solo guardamos si tenemos un destino identificado
             if destino_actual:
                 try:
-                    cantidad = float(row[4]) # Columna E
-                    costo = float(row[5])    # Columna F (Asumí F, ya que E es cantidad)
+                    # --- CANDADO DE LIMPIEZA ---
+                    descripcion = str(row[3]).strip()
                     
-                    datos.append({
-                        "AGENCIA": nombre_agencia,    # Cuauti o Tulti
-                        "DESTINO": destino_actual,    # Lo que estaba después de HACIA
-                        "REFERENCIA": referencia,
-                        "FECHA_MOV": fecha_mov,
-                        "USUARIO": usuario,
-                        "NP": row[2],                 # Col C
-                        "DESCRIPCION": row[3],        # Col D
-                        "CANTIDAD": abs(cantidad),    # Convertimos negativo a positivo
-                        "COSTO_UNIT": costo,          # Col F
-                        "TOTAL_COSTO": abs(cantidad) * costo # Calculado
-                    })
+                    if descripcion and descripcion.lower() != 'nan':
+                        cantidad = float(row[4]) 
+                        costo = float(row[5])    
+                        
+                        datos.append({
+                            "AGENCIA": nombre_agencia,    
+                            "DESTINO": destino_actual,    
+                            "REFERENCIA": referencia,
+                            "FECHA_MOV": fecha_mov,
+                            "USUARIO": usuario,
+                            "NP": row[2],                 
+                            "DESCRIPCION": row[3],        
+                            "CANTIDAD": abs(cantidad),    
+                            "COSTO_UNIT": costo,          
+                            "TOTAL_COSTO": abs(cantidad) * costo 
+                        })
                 except:
                     continue
 
@@ -117,7 +120,6 @@ def procesar_traspasos(file, nombre_agencia):
 st.set_page_config(page_title="Limpiador BPro", layout="wide")
 st.title("🛠️ Limpiador de Reportes BPro - Compras y Traspasos")
 
-# Creamos dos pestañas para organizar la vista
 tab1, tab2 = st.tabs(["📦 Módulo de COMPRAS", "🚚 Módulo de TRASPASOS"])
 
 # --- PESTAÑA 1: COMPRAS ---
@@ -143,7 +145,6 @@ with tab1:
             st.success(f"¡Base Generada! {len(df_final_compras)} registros encontrados.")
             st.dataframe(df_final_compras.head())
             
-            # Descarga
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df_final_compras.to_excel(writer, index=False)
@@ -175,7 +176,6 @@ with tab2:
             st.success(f"¡Base Generada! {len(df_final_trasp)} movimientos encontrados.")
             st.dataframe(df_final_trasp.head())
             
-            # Descarga
             buffer2 = io.BytesIO()
             with pd.ExcelWriter(buffer2, engine='xlsxwriter') as writer:
                 df_final_trasp.to_excel(writer, index=False)
