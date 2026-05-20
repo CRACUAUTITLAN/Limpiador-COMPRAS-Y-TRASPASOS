@@ -50,7 +50,9 @@ def procesar_compras(file, nombre_agencia):
                         "NP": row[2],
                         "DESCRIPCION": row[3],
                         "CANTIDAD": row[4],
-                        "COSTO_UNIT": row[5],
+                        "COSTO UNITARIO": row[5],
+                        "SUBTOTAL": row[7],
+                        "IVA": row[8],
                         "TOTAL": row[9] 
                     })
                     
