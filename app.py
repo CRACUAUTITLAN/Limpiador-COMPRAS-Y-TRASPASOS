@@ -6,121 +6,126 @@ import io
 def procesar_compras(file, nombre_agencia):
     """
     Limpia el archivo de compras evitando filas basura o subtotales.
+    Procesa todas las hojas manteniendo la continuidad de los encabezados.
     """
-    df = pd.read_excel(file, header=None)
+    # sheet_name=None lee todas las hojas devolviendo un diccionario {nombre_hoja: dataframe}
+    dict_dfs = pd.read_excel(file, sheet_name=None, header=None)
     datos = []
     
-    # Variables de estado
+    # Variables de estado FUERA del bucle de hojas para asegurar la continuidad si se corta el reporte
     factura, fecha, proveedor, comprador = None, None, None, None
     
-    for _, row in df.iterrows():
-        val_a = str(row[0]).strip()
-        
-        # Detectar Encabezados
-        if "FACTURA:" in val_a:
-            try:
-                factura = val_a.split("FACTURA:")[1].strip()
-                
-                if "FECHA FACT:" in str(row[2]):
-                    fecha = str(row[2]).split("FECHA FACT:")[1].strip()
-                if "PROVEEDOR:" in str(row[3]):
-                    proveedor = str(row[3]).split("PROVEEDOR:")[1].strip()
-                if "COMPRADOR:" in str(row[4]):
-                    comprador = str(row[4]).split("COMPRADOR:")[1].strip()
-            except:
-                continue
+    # Recorrer cada una de las hojas del archivo
+    for hoja, df in dict_dfs.items():
+        for _, row in df.iterrows():
+            val_a = str(row[0]).strip()
+            
+            # Detectar Encabezados
+            if "FACTURA:" in val_a:
+                try:
+                    factura = val_a.split("FACTURA:")[1].strip()
+                    
+                    if "FECHA FACT:" in str(row[2]):
+                        fecha = str(row[2]).split("FECHA FACT:")[1].strip()
+                    if "PROVEEDOR:" in str(row[3]):
+                        proveedor = str(row[3]).split("PROVEEDOR:")[1].strip()
+                    if "COMPRADOR:" in str(row[4]):
+                        comprador = str(row[4]).split("COMPRADOR:")[1].strip()
+                except:
+                    continue
 
-        # Detectar Ítems (CRCU / CRTU / o cualquier código de compra)
-        elif val_a.startswith("CR"): 
-            # --- CANDADO DE LIMPIEZA ---
-            descripcion = str(row[3]).strip() # Columna D
-            
-            # Si la descripción existe y no es 'nan' (vacía), guardamos la fila
-            if descripcion and descripcion.lower() != 'nan':
-                datos.append({
-                    "AGENCIA": nombre_agencia,
-                    "FACTURA": factura,
-                    "FECHA": fecha,
-                    "PROVEEDOR": proveedor,
-                    "COMPRADOR": comprador,
-                    "NP": row[2],
-                    "DESCRIPCION": row[3],
-                    "CANTIDAD": row[4],
-                    "COSTO_UNIT": row[5],
-                    "TOTAL": row[9] 
-                })
-            
+            # Detectar Ítems (CRCU / CRTU / o cualquier código de compra)
+            elif val_a.startswith("CR"): 
+                # --- CANDADO DE LIMPIEZA ---
+                descripcion = str(row[3]).strip() # Columna D
+                
+                # Si la descripción existe y no es 'nan' (vacía), guardamos la fila
+                if descripcion and descripcion.lower() != 'nan':
+                    datos.append({
+                        "AGENCIA": nombre_agencia,
+                        "FACTURA": factura,
+                        "FECHA": fecha,
+                        "PROVEEDOR": proveedor,
+                        "COMPRADOR": comprador,
+                        "NP": row[2],
+                        "DESCRIPCION": row[3],
+                        "CANTIDAD": row[4],
+                        "COSTO_UNIT": row[5],
+                        "TOTAL": row[9] 
+                    })
+                    
     return pd.DataFrame(datos)
 
 # --- FUNCIÓN 2: LIMPIEZA DE TRASPASOS (BPRO) ---
 def procesar_traspasos(file, nombre_agencia):
     """
     Limpia traspasos abarcando todas las variantes de salidas y evita subtotales finales.
+    Procesa todas las hojas manteniendo la continuidad de los encabezados.
     """
-    df = pd.read_excel(file, header=None)
+    # sheet_name=None lee todas las hojas devolviendo un diccionario {nombre_hoja: dataframe}
+    dict_dfs = pd.read_excel(file, sheet_name=None, header=None)
     datos = []
     
-    # Variables de estado (Niveles jerárquicos)
+    # Variables de estado (Niveles jerárquicos) FUERA del bucle de hojas para mantener continuidad
     destino_actual = None
     referencia, fecha_mov, usuario = None, None, None
     
-    for _, row in df.iterrows():
-        val_a = str(row[0]).strip().upper()
-        
-        # --- NIVEL 1: DETECTAR DESTINO (SALIDA...) ---
-        # Detecta cualquier variante que empiece con SALIDA
-        if val_a.startswith("SALIDA"):
+    # Recorrer cada una de las hojas del archivo
+    for hoja, df in dict_dfs.items():
+        for _, row in df.iterrows():
+            val_a = str(row[0]).strip().upper()
             
-            # CASO A: Tiene un destino explícito con la palabra "HACIA"
-            if "HACIA" in val_a:
-                try:
-                    destino_sucio = val_a.split("HACIA")[1] 
-                    destino_actual = destino_sucio.strip()
-                except:
-                    continue
-                    
-            # CASO B: Es una salida por traspaso genérica (sin "HACIA")
-            elif "SALIDA DE ALMACEN POR TRASPASO" in val_a:
-                destino_actual = f"SALIDA DE ALMACEN POR TRASPASO {nombre_agencia}"
+            # --- NIVEL 1: DETECTAR DESTINO (SALIDA...) ---
+            if val_a.startswith("SALIDA"):
+                # CASO A: Tiene un destino explícito con la palabra "HACIA"
+                if "HACIA" in val_a:
+                    try:
+                        destino_sucio = val_a.split("HACIA")[1] 
+                        destino_actual = destino_sucio.strip()
+                    except:
+                        continue
+                # CASO B: Es una salida por traspaso genérica (sin "HACIA")
+                elif "SALIDA DE ALMACEN POR TRASPASO" in val_a:
+                    destino_actual = f"SALIDA DE ALMACEN POR TRASPASO {nombre_agencia}"
 
-        # --- NIVEL 2: DETECTAR CABECERA (REFERENCIA / FECHA / USUARIO) ---
-        elif "REFERENCIA:" in val_a:
-            try:
-                referencia = val_a.split("REFERENCIA:")[1].strip()
-                
-                if "FECHA MOV:" in str(row[2]).upper():
-                    fecha_mov = str(row[2]).upper().split("FECHA MOV:")[1].strip()
-                
-                if "USUARIO:" in str(row[3]).upper():
-                    usuario = str(row[3]).upper().split("USUARIO:")[1].strip()
-            except:
-                continue
-                
-        # --- NIVEL 3: DETECTAR ÍTEMS (TRAS...) ---
-        elif val_a.startswith("TRAS"):
-            if destino_actual:
+            # --- NIVEL 2: DETECTAR CABECERA (REFERENCIA / FECHA / USUARIO) ---
+            elif "REFERENCIA:" in val_a:
                 try:
-                    # --- CANDADO DE LIMPIEZA ---
-                    descripcion = str(row[3]).strip()
+                    referencia = val_a.split("REFERENCIA:")[1].strip()
                     
-                    if descripcion and descripcion.lower() != 'nan':
-                        cantidad = float(row[4]) 
-                        costo = float(row[5])    
-                        
-                        datos.append({
-                            "AGENCIA": nombre_agencia,    
-                            "DESTINO": destino_actual,    
-                            "REFERENCIA": referencia,
-                            "FECHA_MOV": fecha_mov,
-                            "USUARIO": usuario,
-                            "NP": row[2],                 
-                            "DESCRIPCION": row[3],        
-                            "CANTIDAD": abs(cantidad),    
-                            "COSTO_UNIT": costo,          
-                            "TOTAL_COSTO": abs(cantidad) * costo 
-                        })
+                    if "FECHA MOV:" in str(row[2]).upper():
+                        fecha_mov = str(row[2]).upper().split("FECHA MOV:")[1].strip()
+                    
+                    if "USUARIO:" in str(row[3]).upper():
+                        usuario = str(row[3]).upper().split("USUARIO:")[1].strip()
                 except:
                     continue
+                    
+            # --- NIVEL 3: DETECTAR ÍTEMS (TRAS...) ---
+            elif val_a.startswith("TRAS"):
+                if destino_actual:
+                    try:
+                        # --- CANDADO DE LIMPIEZA ---
+                        descripcion = str(row[3]).strip()
+                        
+                        if descripcion and descripcion.lower() != 'nan':
+                            cantidad = float(row[4]) 
+                            costo = float(row[5])    
+                            
+                            datos.append({
+                                "AGENCIA": nombre_agencia,    
+                                "DESTINO": destino_actual,    
+                                "REFERENCIA": referencia,
+                                "FECHA_MOV": fecha_mov,
+                                "USUARIO": usuario,
+                                "NP": row[2],                 
+                                "DESCRIPCION": row[3],        
+                                "CANTIDAD": abs(cantidad),    
+                                "COSTO_UNIT": costo,          
+                                "TOTAL_COSTO": abs(cantidad) * costo 
+                            })
+                    except:
+                        continue
 
     return pd.DataFrame(datos)
 
