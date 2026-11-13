@@ -1,5 +1,8 @@
 streamlit
 pandas
-xlrd
+numpy
 openpyxl
+xlrd
 xlsxwriter
+google-api-python-client
+google-auth
