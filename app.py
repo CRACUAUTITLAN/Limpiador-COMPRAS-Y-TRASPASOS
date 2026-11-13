@@ -10,6 +10,16 @@ from googleapiclient.http import MediaIoBaseDownload
 
 
 # =====================================================================
+# CONFIGURACIÓN INTERNA DE GOOGLE DRIVE
+# =====================================================================
+# Pega aquí tu enlace completo de la carpeta de Drive para que quede fijo en el código:
+DRIVE_FOLDER_URL = st.secrets.get(
+    "DRIVE_FOLDER_URL",
+    "https://drive.google.com/drive/folders/1OZ2vUuPgmwPmVeNdXd7FR7MgiCfedr2a"
+)
+
+
+# =====================================================================
 # FUNCIONES UTILITARIAS DE LIMPIEZA Y FORMATO
 # =====================================================================
 def limpiar_np(serie):
@@ -161,9 +171,7 @@ def procesar_entradas_traspasos(file, nombre_agencia="CUAUTITLAN"):
     Limpia el reporte de ENTRADAS por traspaso de BPro.
     Cambia el rubro DESTINO por ORIGEN extrayendo el almacén después de 'DESDE'
     (Ej: 'Entrada a Alm. Gral. Cuautitlan desde Alm. Gral. Tultitlan' -> 'ALM. GRAL. TULTITLAN').
-    También soporta archivos que ya vengan previamente estructurados en columnas.
     """
-    # Verificar primero si el archivo ya viene limpio con encabezados
     df_preview = pd.read_excel(file, nrows=5)
     cols_upper = [str(c).strip().upper() for c in df_preview.columns]
     if "FECHA_MOV" in cols_upper and "NP" in cols_upper:
@@ -185,21 +193,18 @@ def procesar_entradas_traspasos(file, nombre_agencia="CUAUTITLAN"):
         for _, row in df.iterrows():
             val_a = str(row[0]).strip().upper()
 
-            # --- NIVEL 1: DETECTAR ORIGEN (ENTRADA...) ---
+            # NIVEL 1: DETECTAR ORIGEN (ENTRADA...)
             if val_a.startswith("ENTRADA"):
-                # CASO A: Tiene origen explícito con la palabra "DESDE"
-                # Ej: "ENTRADA A ALM. GRAL. CUAUTITLAN DESDE ALM. GRAL. TULTITLAN"
                 if "DESDE" in val_a:
                     try:
                         origen_sucio = val_a.split("DESDE")[1]
                         origen_actual = origen_sucio.strip()
                     except Exception:
                         continue
-                # CASO B: Entrada por traspaso genérica (sin "DESDE")
                 elif "TRASPASO" in val_a:
                     origen_actual = f"ENTRADA DE ALMACEN POR TRASPASO {nombre_agencia}"
 
-            # --- NIVEL 2: DETECTAR CABECERA (REFERENCIA / FECHA / USUARIO) ---
+            # NIVEL 2: DETECTAR CABECERA (REFERENCIA / FECHA / USUARIO)
             elif "REFERENCIA:" in val_a:
                 try:
                     referencia = val_a.split("REFERENCIA:")[1].strip()
@@ -210,7 +215,7 @@ def procesar_entradas_traspasos(file, nombre_agencia="CUAUTITLAN"):
                 except Exception:
                     continue
 
-            # --- NIVEL 3: DETECTAR ÍTEMS (TRAS / ENTR / ETRA...) ---
+            # NIVEL 3: DETECTAR ÍTEMS (TRAS / ENTR / ETRA...)
             elif val_a.startswith(("TRAS", "ENTR", "ETRA")):
                 if origen_actual:
                     try:
@@ -237,10 +242,10 @@ def procesar_entradas_traspasos(file, nombre_agencia="CUAUTITLAN"):
 
 
 # =====================================================================
-# FUNCIÓN 4: CONEXIÓN A GOOGLE DRIVE PARA BASES DE VENTAS MASTER
+# FUNCIÓN 4: CONEXIÓN INTERNA A GOOGLE DRIVE PARA BASES DE VENTAS MASTER
 # =====================================================================
 def extraer_id_carpeta(url_o_id):
-    """Extrae el ID limpio desde un link de carpeta de Google Drive o devuelve el ID directo."""
+    """Extrae el ID limpio desde el link fijo de Google Drive."""
     texto = str(url_o_id).strip()
     if "/folders/" in texto:
         texto = texto.split("/folders/")[1].split("?")[0].split("/")[0]
@@ -248,15 +253,16 @@ def extraer_id_carpeta(url_o_id):
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def cargar_ventas_desde_drive(folder_url_o_id):
+def cargar_ventas_desde_drive():
     """
-    Se conecta a Google Drive usando st.secrets['gcp_service_account'],
-    busca los archivos Excel con formato 'AGENCIA_Ventas_AÑO_MASTER' (priorizando CUAUTITLAN)
-    y los une en un solo DataFrame.
+    Se conecta automáticamente a la carpeta fija en Google Drive usando st.secrets,
+    descarga los archivos 'AGENCIA_Ventas_AÑO_MASTER' y los une en un DataFrame.
     """
-    folder_id = extraer_id_carpeta(folder_url_o_id)
-    if not folder_id:
-        raise ValueError("No se proporcionó un link o ID de carpeta válido.")
+    folder_id = extraer_id_carpeta(DRIVE_FOLDER_URL)
+    if not folder_id or "PEGA_AQUI" in folder_id:
+        raise ValueError(
+            "Configura el enlace de tu carpeta en la constante DRIVE_FOLDER_URL del código."
+        )
 
     creds = service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
@@ -264,7 +270,6 @@ def cargar_ventas_desde_drive(folder_url_o_id):
     )
     service = build("drive", "v3", credentials=creds)
 
-    # Buscar archivos dentro de la carpeta que contengan '_Ventas_' y '_MASTER'
     query = (
         f"'{folder_id}' in parents and trashed = false "
         f"and name contains '_Ventas_' and name contains '_MASTER'"
@@ -274,13 +279,12 @@ def cargar_ventas_desde_drive(folder_url_o_id):
 
     if not archivos:
         raise FileNotFoundError(
-            "No se encontraron archivos con el patrón '_Ventas_..._MASTER' en la carpeta."
+            "No se encontraron archivos con el patrón '_Ventas_..._MASTER' en la carpeta de Drive."
         )
 
     lista_dfs = []
     for archivo in archivos:
         nombre = archivo["name"].upper()
-        # Si queremos optimizar la descarga, cargamos los de CUAUTITLAN o todos los MASTER
         if "CUAUTITLAN" not in nombre and any("CUAUTITLAN" in a["name"].upper() for a in archivos):
             continue
 
@@ -305,13 +309,10 @@ def cargar_ventas_desde_drive(folder_url_o_id):
 # FUNCIÓN 5: MOTOR DE CRUCES "MODELO LUIS"
 # =====================================================================
 def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw, df_ventas_raw):
-    # -----------------------------------------------------------------
     # 1. PREPARAR BASE 1: SOLICITUDES DE TRASPASO
-    # -----------------------------------------------------------------
     df_sol = df_solicitudes_raw.copy()
     df_sol.columns = [str(c).strip().upper() for c in df_sol.columns]
 
-    # Identificar columna de fecha 'c<' (o primera columna si varía mayúscula/minúscula)
     col_fecha_sol = "C<" if "C<" in df_sol.columns else df_sol.columns[0]
     col_np_sol = "N° DE PARTE" if "N° DE PARTE" in df_sol.columns else "NP"
 
@@ -322,12 +323,9 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
     df_base["N° DE PARTE"] = limpiar_np(df_sol[col_np_sol])
     df_base["CANTIDAD SOLICITADA"] = pd.to_numeric(df_sol["CANTIDAD"], errors="coerce").fillna(0)
 
-    # Eliminar filas sin número de parte válido
     df_base = df_base.dropna(subset=["N° DE PARTE"]).reset_index(drop=True)
 
-    # -----------------------------------------------------------------
     # 2. PREPARAR Y CRUZAR BASE 2: BASE INVENTARIO
-    # -----------------------------------------------------------------
     df_inv = df_inventario_raw.copy()
     df_inv.columns = [str(c).strip().upper() for c in df_inv.columns]
 
@@ -335,7 +333,6 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
     df_inv["ALMACEN_CLEAN"] = limpiar_texto(df_inv["ALMACEN"])
     df_inv["NP_CLEAN"] = limpiar_np(df_inv["NP"])
 
-    # Filtro: SUCURSAL = CUAUTITLAN y ALMACEN = ALM. GENERAL
     df_inv_filtrado = df_inv[
         (df_inv["SUCURSAL_CLEAN"] == "CUAUTITLAN")
         & (df_inv["ALMACEN_CLEAN"] == "ALM. GENERAL")
@@ -345,7 +342,6 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
         df_inv_filtrado["EXISTENCIA"], errors="coerce"
     ).fillna(0)
 
-    # Agrupar por NP en caso de duplicados en inventario
     df_inv_unico = (
         df_inv_filtrado.groupby("NP_CLEAN", as_index=False)
         .agg({"DESCRIPCION": "first", "EXISTENCIA": "sum"})
@@ -361,9 +357,7 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
     df_base["EXISTENCIA"] = df_base["EXISTENCIA"].fillna(0)
     df_base.drop(columns=["NP_CLEAN"], inplace=True, errors="ignore")
 
-    # -----------------------------------------------------------------
     # 3. PREPARAR Y CRUZAR BASE 3: ENTRADAS (INGRESO Y CANTIDAD TRASPASADA)
-    # -----------------------------------------------------------------
     df_ent = df_entradas_raw.copy()
     df_ent.columns = [str(c).strip().upper() for c in df_ent.columns]
 
@@ -376,13 +370,11 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
     df_ent["FECHA_MOV_DT"] = parsear_fecha_latam(df_ent["FECHA_MOV"])
     df_ent["CANTIDAD_NUM"] = pd.to_numeric(df_ent["CANTIDAD"], errors="coerce").fillna(0)
 
-    # Filtro: AGENCIA = CUAUTITLAN y ORIGEN = ALM. GRAL. TULTITLAN
     df_ent_filtrado = df_ent[
         (df_ent["AGENCIA_CLEAN"] == "CUAUTITLAN")
         & (df_ent["ORIGEN_CLEAN"].str.contains("ALM. GRAL. TULTITLAN", na=False))
     ].dropna(subset=["NP_CLEAN", "FECHA_MOV_DT"]).sort_values("FECHA_MOV_DT", ascending=True)
 
-    # Regla de oro: FECHA_MOV >= FECHA SOLICITUD, quedándonos solo con el primero (más cercano)
     ingresos_encontrados = []
     cant_traspasadas = []
 
@@ -411,9 +403,7 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
     df_base["INGRESO"] = ingresos_encontrados
     df_base["CANTIDAD TRASPASADA"] = cant_traspasadas
 
-    # -----------------------------------------------------------------
     # 4. PREPARAR Y CRUZAR BASE 4: VENTAS MASTER
-    # -----------------------------------------------------------------
     df_vta = df_ventas_raw.copy()
     df_vta.columns = [str(c).strip().upper() for c in df_vta.columns]
 
@@ -423,7 +413,6 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
     df_vta["FECHA_DT"] = parsear_fecha_latam(df_vta["FECHA"])
     df_vta["CANTIDAD_NUM"] = pd.to_numeric(df_vta["CANTIDAD"], errors="coerce").fillna(0)
 
-    # Filtro: SUCURSAL == CUAUTITLAN
     df_vta_cuauti = df_vta[
         df_vta["SUCURSAL_CLEAN"] == "CUAUTITLAN"
     ].dropna(subset=["NP_CLEAN", "FECHA_DT"]).sort_values("FECHA_DT", ascending=True)
@@ -436,13 +425,11 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
         fecha_ing = row["INGRESO"]
         vendedor_solicita = row["VENDEDOR"]
 
-        # Solo se evalúa la venta si la pieza tuvo ingreso por traspaso
         if pd.isna(fecha_ing):
             fechas_venta.append(pd.NaT)
             cantidades_vendidas.append(0.0)
             continue
 
-        # Cruce por NP y FECHA >= FECHA DE INGRESO
         ventas_np = df_vta_cuauti[
             (df_vta_cuauti["NP_CLEAN"] == np_actual)
             & (df_vta_cuauti["FECHA_DT"] >= fecha_ing)
@@ -452,27 +439,21 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
             fechas_venta.append(pd.NaT)
             cantidades_vendidas.append(0.0)
         else:
-            # Verificar si el vendedor que solicitó hizo la venta
             ventas_vendedor = ventas_np[ventas_np["VENDEDOR_CLEAN"] == vendedor_solicita]
             if not ventas_vendedor.empty:
                 primera_venta_vend = ventas_vendedor.iloc[0]
                 fechas_venta.append(primera_venta_vend["FECHA_DT"])
                 cantidades_vendidas.append(float(primera_venta_vend["CANTIDAD_NUM"]))
             else:
-                # Hubo venta del NP, pero el nombre de VENDEDOR no hizo match con SOLICITA -> 0
                 fechas_venta.append(ventas_np.iloc[0]["FECHA_DT"])
                 cantidades_vendidas.append(0.0)
 
     df_base["FECHA VENTA"] = fechas_venta
     df_base["CANTIDAD VENDIDA"] = cantidades_vendidas
 
-    # -----------------------------------------------------------------
-    # 5. CÁLCULO DE MÉTRICAS FINALES (DÍAS FACTURACIÓN, ESTATUS, TASA ÉXITO)
-    # -----------------------------------------------------------------
-    # DÍAS FACTURACIÓN = FECHA VENTA - FECHA DE INGRESO
+    # 5. CÁLCULO DE MÉTRICAS FINALES
     df_base["DIAS FACTURACIÓN"] = (df_base["FECHA VENTA"] - df_base["INGRESO"]).dt.days
 
-    # ESTATUS
     def evaluar_estatus(row):
         fecha_sol = row["FECHA SOLICITUD"]
         fecha_ing = row["INGRESO"]
@@ -484,16 +465,12 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
 
         dias_ingreso = (fecha_ing - fecha_sol).days if pd.notna(fecha_sol) else 0
 
-        # Si el ingreso tardó más de 3 días respecto a la solicitud
         if dias_ingreso > 3:
             return "INGRESO TARDÍO"
-        # Si la cantidad vendida es 0 pero sí llegó el traspaso
         if cant_ven == 0:
             return "VENTA FRACASO"
-        # Si vendieron exactamente lo solicitado (o más)
         if cant_ven >= cant_sol and cant_sol > 0:
             return "VENTA EXITOSA"
-        # Si la cantidad vendida es menor a la solicitada
         if 0 < cant_ven < cant_sol:
             return "VENTA PARCIAL"
 
@@ -501,18 +478,15 @@ def construir_modelo_luis(df_solicitudes_raw, df_inventario_raw, df_entradas_raw
 
     df_base["ESTATUS"] = df_base.apply(evaluar_estatus, axis=1)
 
-    # TASA ÉXITO = CANTIDAD VENDIDA / CANTIDAD SOLICITADA
     df_base["TASA ÉXITO"] = np.where(
         df_base["CANTIDAD SOLICITADA"] > 0,
         (df_base["CANTIDAD VENDIDA"] / df_base["CANTIDAD SOLICITADA"]).round(4),
         0.0,
     )
 
-    # Formatear fechas de salida en formato LATAM (DD/MM/YYYY) para el reporte final
     for col_f in ["FECHA SOLICITUD", "INGRESO", "FECHA VENTA"]:
         df_base[col_f] = df_base[col_f].dt.strftime("%d/%m/%Y").fillna("")
 
-    # Orden exacto de las 14 columnas solicitadas
     columnas_finales = [
         "AGENCIA",
         "VENDEDOR",
@@ -617,8 +591,8 @@ with tab2:
 with tab3:
     st.markdown("### 📊 Generador de Base Madre - MODELO LUIS")
     st.caption(
-        "Cruza Solicitudes de Traspaso, Inventario (Cuautitlán - Alm. General), "
-        "Entradas por Traspaso (desde Alm. Gral. Tultitlán) y Ventas Master desde Google Drive."
+        "Sube las 3 bases locales; el sistema se conectará automáticamente a Google Drive "
+        "para cruzar contra las bases Master de Ventas."
     )
 
     col_m1, col_m2, col_m3 = st.columns(3)
@@ -642,30 +616,11 @@ with tab3:
             key="ml_ent",
         )
 
-    st.markdown("---")
-    st.markdown("#### 4️⃣ Base de Ventas Master (Google Drive API)")
-
-    # Toma el link/ID de carpeta desde st.secrets o permite ingresarlo en pantalla
-    default_folder = st.secrets.get("DRIVE_FOLDER_URL", "")
-    col_d1, col_d2 = st.columns([2, 1])
-    with col_d1:
-        folder_input = st.text_input(
-            "Link o ID de la carpeta de Ventas en Google Drive:",
-            value=default_folder,
-            placeholder="Pega aquí el link de la carpeta de Google Drive...",
-        )
-    with col_d2:
-        file_ventas_manual = st.file_uploader(
-            "Opcional: Subir Ventas Master manualmente",
-            type=["xls", "xlsx"],
-            key="ml_vta_manual",
-        )
-
     if st.button("🚀 Generar Base Madre (MODELO LUIS)", type="primary"):
         if not (file_solicitudes and file_inventario and file_entradas):
-            st.warning("⚠️ Por favor sube las 3 bases locales (Solicitudes, Inventario y Entradas).")
+            st.warning("⚠️ Por favor sube las 3 bases (Solicitudes, Inventario y Entradas).")
         else:
-            with st.spinner("Procesando archivos, conectando a Drive y ejecutando cruces..."):
+            with st.spinner("Procesando archivos y consultando Ventas Master en Google Drive..."):
                 try:
                     # 1. Leer Solicitudes e Inventario
                     df_sol_raw = pd.read_excel(file_solicitudes)
@@ -674,11 +629,8 @@ with tab3:
                     # 2. Procesar y limpiar Entradas de Cuautitlán
                     df_ent_raw = procesar_entradas_traspasos(file_entradas, "CUAUTITLAN")
 
-                    # 3. Cargar Ventas desde Google Drive (o manual si se subió archivo)
-                    if file_ventas_manual is not None:
-                        df_vta_raw = pd.read_excel(file_ventas_manual)
-                    else:
-                        df_vta_raw = cargar_ventas_desde_drive(folder_input)
+                    # 3. Cargar Ventas automáticamente desde la carpeta interna de Google Drive
+                    df_vta_raw = cargar_ventas_desde_drive()
 
                     # 4. Construir Base Madre
                     df_modelo_luis = construir_modelo_luis(
@@ -700,7 +652,6 @@ with tab3:
                         workbook = writer.book
                         worksheet = writer.sheets["MODELO_LUIS"]
                         pct_fmt = workbook.add_format({"num_format": "0.0%"})
-                        # Aplicar formato de porcentaje a la columna TASA ÉXITO (columna N / índice 13)
                         worksheet.set_column(13, 13, 14, pct_fmt)
 
                     st.download_button(
